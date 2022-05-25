@@ -31,15 +31,26 @@ class G:
 # 在项目中创建计数SA
 def _create_accounts(service,project,count):
     batch = service.new_batch_http_request(callback=_def_batch_resp)
-    for i in range(count):
+    for _ in range(count):
         aid = _x_id()
-        batch.add(service.projects().serviceAccounts().create(name='projects/' + project, body={ 'accountId': aid, 'serviceAccount': { 'displayName': aid }})) 
+        batch.add(
+            service.projects()
+            .serviceAccounts()
+            .create(
+                name=f'projects/{project}',
+                body={
+                    'accountId': aid,
+                    'serviceAccount': {'displayName': aid},
+                },
+            )
+        )
+
         sleep(sleep_time/100)
     batch.execute()
 
 # 创建填充项目所需的帐户
 def _create_remaining_accounts(iam,project):
-    print('在%s中创建帐户' % project)
+    print(f'在{project}中创建帐户')
     sa_count = len(_list_sas(iam,project))
     _create_accounts(iam,project,G.sq - sa_count)
 
@@ -68,13 +79,13 @@ def _def_batch_resp(id,resp,exception):
         if str(exception).startswith('<HttpError 429'):
             sleep(sleep_time/100)
         else:
-            print(str(exception))
+            print(exception)
 
 # 项目创建批处理程序
 def _pc_resp(id,resp,exception):
     global project_create_ops
     if exception is not None:
-        print(str(exception))
+        print(exception)
     else:
         for i in resp.values():
             project_create_ops.append(i)
@@ -84,11 +95,8 @@ def _create_projects(cloud,count):
     global project_create_ops
     batch = cloud.new_batch_http_request(callback=_pc_resp)
     new_projs = []
-    for i in range(count):
-        if G.pp is None:
-            new_proj = _rand_id()
-        else:
-            new_proj = _generate_id()
+    for _ in range(count):
+        new_proj = _rand_id() if G.pp is None else _generate_id()
         new_projs.append(new_proj)
         batch.add(cloud.projects().create(body={'project_id':new_proj}))
     batch.execute()
@@ -106,12 +114,18 @@ def _enable_services(service,projects,ste):
     batch = service.new_batch_http_request(callback=_def_batch_resp)
     for i in projects:
         for j in ste:
-            batch.add(service.services().enable(name='projects/%s/services/%s' % (i,j)))
+            batch.add(service.services().enable(name=f'projects/{i}/services/{j}'))
     batch.execute()
 
 # 列出项目中的SA
 def _list_sas(iam,project):
-    resp = iam.projects().serviceAccounts().list(name='projects/' + project,pageSize=G.sq).execute()
+    resp = (
+        iam.projects()
+        .serviceAccounts()
+        .list(name=f'projects/{project}', pageSize=G.sq)
+        .execute()
+    )
+
     if 'accounts' in resp:
         return resp['accounts']
     return []
@@ -148,24 +162,30 @@ def _create_sa_keys(iam,projects,path,naming_rules):
             down_count = G.sq
         else:
             down_count = G.sq
-            
-        global current_key_dump    
+
+        global current_key_dump
         current_key_dump = []
-        print('从 %s 下载密钥' % i)
+        print(f'从 {i} 下载密钥')
         while current_key_dump is None or len(current_key_dump) < down_count:
             batch = iam.new_batch_http_request(callback=_batch_keys_resp)
             total_sas = _list_sas(iam,i)
             for j in total_sas:
-                batch.add(iam.projects().serviceAccounts().keys().create(
-                    name='projects/%s/serviceAccounts/%s' % (i,j['uniqueId']),
-                    body={
-                        'privateKeyType':'TYPE_GOOGLE_CREDENTIALS_FILE',
-                        'keyAlgorithm':'KEY_ALG_RSA_2048'
-                    }
-                ))
+                batch.add(
+                    iam.projects()
+                    .serviceAccounts()
+                    .keys()
+                    .create(
+                        name=f"projects/{i}/serviceAccounts/{j['uniqueId']}",
+                        body={
+                            'privateKeyType': 'TYPE_GOOGLE_CREDENTIALS_FILE',
+                            'keyAlgorithm': 'KEY_ALG_RSA_2048',
+                        },
+                    )
+                )
+
             batch.execute()
             if current_key_dump is None:
-                print('从 %s 重新下载密钥' % i)
+                print(f'从 {i} 重新下载密钥')
                 current_key_dump = []
             else:
                 for j in current_key_dump:
@@ -173,18 +193,16 @@ def _create_sa_keys(iam,projects,path,naming_rules):
                     client_email_sa = json.loads(list(j)[1])['client_email']
                     client_email_sa_prefix = ''.join(re.findall(re.compile(r'(.*)[@]'),json.loads(list(j)[1])['client_email']))
                     project_id_sa = json.loads(list(j)[1])['project_id']
-                    
+
                     if naming_rules == 1:
                         json_name = client_email_sa
                     elif naming_rules == 2:
                         json_name = client_email_sa_prefix
                     elif naming_rules == 3:
-                        name_list = []
-                        name_list.append(project_id_sa)
-                        name_list.append(client_email_sa_prefix)
+                        name_list = [project_id_sa, client_email_sa_prefix]
                         json_name = '-'.join(name_list)
-                        
-                    with open('%s/%s.json' % (path,json_name),'w+') as f:
+
+                    with open(f'{path}/{json_name}.json', 'w+') as f:
                         f.write(j[1])
 
 # 删除服务帐户
@@ -235,13 +253,16 @@ def serviceaccountfactory(
     serviceusage = build('serviceusage','v1',credentials=creds)
 
     projs = None
-    while projs == None:
+    while projs is None:
         try:
             projs = _get_projects(cloud)
         except HttpError as e:
             if loads(e.content.decode('utf-8'))['error']['status'] == 'PERMISSION_DENIED':
                 try:
-                    serviceusage.services().enable(name='projects/%s/services/cloudresourcemanager.googleapis.com' % proj_id).execute()
+                    serviceusage.services().enable(
+                        name=f'projects/{proj_id}/services/cloudresourcemanager.googleapis.com'
+                    ).execute()
+
                 except HttpError as e:
                     print(e._get_reason())
                     input('按Enter重试。')
@@ -250,7 +271,7 @@ def serviceaccountfactory(
     if list_sas:
         return _list_sas(iam,list_sas)
     if create_projects:
-        print("创建项目: {}".format(create_projects))
+        print(f"创建项目: {create_projects}")
         if create_projects > 0:
             current_count = len(_get_projects(cloud))
             if current_count + create_projects <= max_projects:
@@ -271,42 +292,37 @@ def serviceaccountfactory(
         print('注意这会删除所有项目中的sa')
         input('按Enter继续......')
         projest_list = _get_projects(cloud)
-        print('共计 %s 个项目' % len(projest_list))
+        print(f'共计 {len(projest_list)} 个项目')
         for p in projest_list:
-            print('删除 %s 中的服务帐户' % p)
+            print(f'删除 {p} 中的服务帐户')
             _delete_sas(iam,p)
         sys.exit('删除 sa 完成')
-    
+
     if enable_services:
-        ste = []
-        ste.append(enable_services)
+        ste = [enable_services]
         if enable_services == '~':
             ste = selected_projects
         elif enable_services == '*':
             ste = _get_projects(cloud)
-        services = [i + '.googleapis.com' for i in services]
+        services = [f'{i}.googleapis.com' for i in services]
         print('启用服务')
         _enable_services(serviceusage,ste,services)
     if create_sas:
-        stc = []
-        stc.append(create_sas)
+        stc = [create_sas]
         if create_sas == '~':
             stc = selected_projects
         elif create_sas == '*':
             stc =  _get_projects(cloud)
         for i in stc:
             _create_remaining_accounts(iam,i)
-    
+
     if download_keys:
         try:
             os.mkdir(path)
         except OSError as e:
-            if e.errno == errno.EEXIST:
-                pass
-            else:
+            if e.errno != errno.EEXIST:
                 raise
-        std = []
-        std.append(download_keys)
+        std = [download_keys]
         if download_keys == '~':
             std = selected_projects
         elif download_keys == '*':
@@ -320,7 +336,7 @@ def serviceaccountfactory(
         elif delete_sas == '*':
             std = _get_projects(cloud)
         for i in std:
-            print('删除 %s 中的服务帐户' % i)
+            print(f'删除 {i} 中的服务帐户')
             _delete_sas(iam,i)
 
 if __name__ == '__main__':
@@ -347,17 +363,13 @@ if __name__ == '__main__':
     parse.add_argument('-x',                default=1,     type=int,          help='\n邮箱序号。默认：1\n\n')
     parse.add_argument('--email-name',      default=1,     type=int,          help='\n下载sa时json文件命名方式。默认：1 \(按邮箱命名\)\n1 邮箱\n2 邮箱前缀\(慎选\)\n3 项目-邮箱前缀\n\n')
     args = parse.parse_args()
-    
+
     # 如果凭据文件无效，请搜索一个。
     G.x = args.x - 1
     G.n = args.n - 1
     G.pp = args.project_prefix
     G.sp = args.sa_prefix
-    if args.sa_quantity==101:
-        G.sq = args.sa_quantity - 1
-    else:
-        G.sq = args.sa_quantity
-    
+    G.sq = args.sa_quantity - 1 if args.sa_quantity==101 else args.sa_quantity
     if not os.path.exists(args.credentials):
         options = glob('*.json')
         print('找不到凭证 %s.请启用云端硬盘API:\n'
@@ -377,32 +389,18 @@ if __name__ == '__main__':
                 inp = input('> ')
                 if inp in inp_options:
                     break
-            if inp in options:
-                args.credentials = inp
-            else:
-                args.credentials = options[int(inp) - 1]
-            print('下次使用 --credentials %s 来使用此凭据文件。' % args.credentials)
+            args.credentials = inp if inp in options else options[int(inp) - 1]
+            print(f'下次使用 --credentials {args.credentials} 来使用此凭据文件。')
     if args.quick_setup:
-        if args.project_prefix is not None:
-            opt = '*'
-            if args.new_only:
-                opt = '~'
-            args.services = ['iam','drive']
-            args.create_projects = args.quick_setup
-            args.enable_services = opt
-            args.create_sas = opt
-            args.download_keys = opt
-        else:
+        if args.project_prefix is None:
             print('没有 --project-prefix 参数，将启用随机项目名模式')
             input('按Enter继续...')
-            opt = '*'
-            if args.new_only:
-                opt = '~'
-            args.services = ['iam','drive']
-            args.create_projects = args.quick_setup
-            args.enable_services = opt
-            args.create_sas = opt
-            args.download_keys = opt
+        opt = '~' if args.new_only else '*'
+        args.download_keys = opt
+        args.create_sas = opt
+        args.enable_services = opt
+        args.create_projects = args.quick_setup
+        args.services = ['iam','drive']
     resp = serviceaccountfactory(
         path=args.path,
         token=args.token,
@@ -424,13 +422,13 @@ if __name__ == '__main__':
             if resp:
                 print('项目 (%d):' % len(resp))
                 for i in resp:
-                    print('  ' + i)
+                    print(f'  {i}')
             else:
                 print('没有项目.')
         elif args.list_sas:
             if resp:
                 print('服务帐户在 %s (%d):' % (args.list_sas,len(resp)))
                 for i in resp:
-                    print('  %s (%s)' % (i['email'],i['uniqueId']))
+                    print(f"  {i['email']} ({i['uniqueId']})")
             else:
                 print('没有服务帐户.')
